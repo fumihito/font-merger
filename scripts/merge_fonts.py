@@ -33,9 +33,10 @@ NAMED_RANGE_ALIASES = {
     "kana": "kana",
     "latin1": "latin_1",
     "latin-ext": "latin_extended",
+    "alnum": "ascii_alnum",
 }
 SUPPORTED_NAMED_RANGES = {
-    "ascii", "latin", "latin_1", "latin_extended", "greek", "cyrillic",
+    "ascii", "ascii_alnum", "latin", "latin_1", "latin_extended", "greek", "cyrillic",
     "numbers", "punctuation", "symbols", "emoji", "fullwidth", "halfwidth",
     "math", "arrows", "box_drawing", "dingbats", "currency", "hiragana",
     "katakana", "kana", "japanese", "kanji", "jis_level_1", "jis_level_2",
@@ -53,6 +54,7 @@ def named_codepoints(name: str) -> set[int]:
     name = NAMED_RANGE_ALIASES.get(name, name)
     simple_ranges = {
         "ascii": ((0x0000, 0x007F),),
+        "ascii_alnum": ((0x0030, 0x0039), (0x0041, 0x005A), (0x0061, 0x007A)),
         "latin": ((0x0000, 0x024F), (0x1E00, 0x1EFF), (0x2C60, 0x2C7F), (0xA720, 0xA7FF)),
         "latin_1": ((0x0000, 0x00FF),),
         "latin_extended": ((0x0100, 0x024F), (0x1E00, 0x1EFF)),
@@ -156,6 +158,9 @@ def merge_fonts(
     preserve_names: bool = False,
     codepoints: set[int] | None = None,
     family_name: str = "OboroMaru",
+    round_alnum: bool = False,
+    round_radius: float = 0.0125,
+    embolden_alnum: float = 0.0,
 ) -> None:
     """Create output using B as the base and A for selected codepoints."""
 
@@ -200,6 +205,11 @@ def merge_fonts(
             _add_cmap_mapping(font_b, codepoint, target)
             b_cmap[codepoint] = target
 
+    if round_alnum:
+        _round_alphanumeric(font_b, round_radius)
+    if embolden_alnum:
+        _embolden_alphanumeric(font_b, embolden_alnum)
+
     if not preserve_names:
         _update_name(font_b, proportional=proportional, family=family_name)
     _restore_fixed_width_metadata(font_b)
@@ -207,6 +217,151 @@ def merge_fonts(
         _make_proportional(font_b)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     font_b.save(output_path)
+
+
+def _round_alphanumeric(font, radius_ratio: float) -> None:
+    """Soften corners in ASCII letters and digits already present in *font*.
+
+    This deliberately changes geometry only; it does not embolden outlines or
+    change advances.  A point at a sharp corner is replaced with two on-curve
+    points and the original point as a quadratic control point.  The operation
+    is intentionally conservative and leaves contours containing off-curve
+    neighbours untouched.
+    """
+
+    radius = max(0, round(font["head"].unitsPerEm * radius_ratio))
+    if not radius:
+        return
+    cmap = font["cmap"].getBestCmap()
+    glyf = font["glyf"]
+    rounded_names: set[str] = set()
+    for codepoint in named_codepoints("ascii_alnum"):
+        glyph_name = cmap.get(codepoint)
+        if glyph_name is None or glyph_name in rounded_names:
+            continue
+        glyph = glyf[glyph_name]
+        if glyph.numberOfContours <= 0:
+            continue
+        if _round_glyph(glyph, glyf, radius):
+            rounded_names.add(glyph_name)
+    # Rounding inserts points.  maxp is not automatically recalculated by
+    # TTFont.save(), and rasterizers may otherwise truncate the affected glyphs.
+    font["maxp"].recalc(font)
+
+
+def _round_glyph(glyph, glyf, radius: int) -> bool:
+    """Round eligible simple-glyph corners, returning whether it changed."""
+
+    from fontTools.ttLib.tables._g_l_y_f import GlyphCoordinates
+    from fontTools.ttLib.tables.ttProgram import Program
+
+    if glyph.isComposite():
+        # ASCII alphanumeric glyphs are normally simple.  Avoid changing
+        # shared component geometry implicitly when a font happens to encode
+        # one of them as a composite.
+        return False
+
+    coordinates, end_points, flags = glyph.getCoordinates(glyf)
+    new_coordinates = []
+    new_flags = []
+    new_end_points = []
+    old_start = 0
+    changed = False
+
+    for old_end in end_points:
+        contour = list(range(old_start, old_end + 1))
+        rounded = {}
+        for position, index in enumerate(contour):
+            previous = contour[position - 1]
+            following = contour[(position + 1) % len(contour)]
+            if not (flags[index] & 1 and flags[previous] & 1 and flags[following] & 1):
+                continue
+            px, py = coordinates[index]
+            ax, ay = coordinates[previous][0] - px, coordinates[previous][1] - py
+            bx, by = coordinates[following][0] - px, coordinates[following][1] - py
+            a_length = (ax * ax + ay * ay) ** 0.5
+            b_length = (bx * bx + by * by) ** 0.5
+            if min(a_length, b_length) == 0:
+                continue
+            # Collinear points are not corners.  The dot-product threshold
+            # also avoids introducing visible kinks on almost-straight stems.
+            dot = (ax * bx + ay * by) / (a_length * b_length)
+            if dot < -0.985:
+                continue
+            cut = min(float(radius), a_length * 0.24, b_length * 0.24)
+            if cut < 1:
+                continue
+            rounded[index] = (
+                (round(px + ax * cut / a_length), round(py + ay * cut / a_length)),
+                (px, py),
+                (round(px + bx * cut / b_length), round(py + by * cut / b_length)),
+            )
+
+        for index in contour:
+            if index in rounded:
+                incoming, control, outgoing = rounded[index]
+                new_coordinates.extend((incoming, control, outgoing))
+                new_flags.extend((1, flags[index] & ~1, 1))
+                changed = True
+            else:
+                new_coordinates.append(tuple(coordinates[index]))
+                new_flags.append(flags[index])
+        new_end_points.append(len(new_coordinates) - 1)
+        old_start = old_end + 1
+
+    if changed:
+        glyph.coordinates = GlyphCoordinates(new_coordinates)
+        glyph.flags = new_flags
+        glyph.endPtsOfContours = new_end_points
+        # Hinting instructions address points by index.  Since rounding adds
+        # points, retaining the old program can make rasterizers draw broken
+        # outlines.  Unhinted rendering still uses the corrected geometry.
+        glyph.program = Program()
+        glyph.recalcBounds(glyf)
+    return changed
+
+
+def _embolden_alphanumeric(font, ratio: float) -> None:
+    """Expand ASCII alphanumeric outlines by *ratio* around their centers.
+
+    This is a geometry-only, dependency-free approximation of a small weight
+    increase. Advances are retained, while modified glyphs lose stale hinting
+    programs because their point coordinates change.
+    """
+
+    if ratio < 0:
+        raise ValueError("embolden ratio must be non-negative")
+    scale = 1.0 + ratio
+    cmap = font["cmap"].getBestCmap()
+    glyf = font["glyf"]
+    changed_names: set[str] = set()
+    from fontTools.ttLib.tables._g_l_y_f import GlyphCoordinates
+    from fontTools.ttLib.tables.ttProgram import Program
+
+    for codepoint in named_codepoints("ascii_alnum"):
+        glyph_name = cmap.get(codepoint)
+        if glyph_name is None or glyph_name in changed_names:
+            continue
+        glyph = glyf[glyph_name]
+        if glyph.numberOfContours <= 0 or glyph.isComposite():
+            continue
+        coordinates, _, _ = glyph.getCoordinates(glyf)
+        if not coordinates:
+            continue
+        glyph.recalcBounds(glyf)
+        center_x = (glyph.xMin + glyph.xMax) / 2
+        center_y = (glyph.yMin + glyph.yMax) / 2
+        glyph.coordinates = GlyphCoordinates(
+            (
+                round(center_x + (x - center_x) * scale),
+                round(center_y + (y - center_y) * scale),
+            )
+            for x, y in coordinates
+        )
+        glyph.program = Program()
+        glyph.recalcBounds(glyf)
+        changed_names.add(glyph_name)
+    font["maxp"].recalc(font)
 
 
 def _require_glyf(font, label: str) -> None:
@@ -305,6 +460,18 @@ def build_parser() -> argparse.ArgumentParser:
               f"(names: {', '.join(sorted(SUPPORTED_NAMED_RANGES))}; default: all A cmap)"),
     )
     parser.add_argument("--proportional", action="store_true", help="make glyph advances proportional to their outlines")
+    parser.add_argument(
+        "--round-alnum", action="store_true",
+        help="round corners in ASCII letters and digits without emboldening them",
+    )
+    parser.add_argument(
+        "--round-radius", type=float, default=0.0125, metavar="RATIO",
+        help="corner-rounding radius as a ratio of unitsPerEm (default: 0.0125)",
+    )
+    parser.add_argument(
+        "--embolden-alnum", type=float, default=0.0, metavar="RATIO",
+        help="expand ASCII letters and digits by a ratio (for example: 0.05)",
+    )
     parser.add_argument("--preserve-names", action="store_true", help="keep font B's name table")
     parser.add_argument("--family-name", default="OboroMaru", help="family name written to the generated font")
     parser.add_argument("--output", type=Path, default=None, help="output .ttf path")
@@ -330,6 +497,9 @@ def main(argv: list[str] | None = None) -> int:
             preserve_names=args.preserve_names,
             codepoints=ranges,
             family_name=args.family_name,
+            round_alnum=args.round_alnum,
+            round_radius=args.round_radius,
+            embolden_alnum=args.embolden_alnum,
         )
     except ImportError:
         print("fontTools is required: python3 -m pip install -r requirements.txt", file=sys.stderr)

@@ -32,12 +32,34 @@ python3 scripts/merge_fonts.py \
   --output dist/combined.ttf
 ```
 
+`--round-alnum` と `--embolden-alnum` による丸み・太さの調整は、ASCII英数字（`0–9`、`A–Z`、`a–z`）だけに適用されます。日本語、記号、その他のUnicodeグリフは変更されません。`--round-alnum` は英数字の輪郭の角だけを丸め、太字化やメトリクス変更は行いません。丸みの強さは `--round-radius` で指定できます（`unitsPerEm` に対する比率、デフォルト `0.0125`）。
+
+```sh
+python3 scripts/merge_fonts.py \
+  --font-a fonts/Japanese.ttf \
+  --font-b fonts/Latin.ttf \
+  --range japanese \
+  --round-alnum --round-radius 0.0125 --embolden-alnum 0.05 \
+  --output dist/rounded.ttf
+```
+
+ASCII英数字だけを5%太くする場合は `--embolden-alnum 0.05` を指定します。advance width は維持し、英数字の輪郭だけを拡大します。
+
+生成後の英数字を画像化して検証するには、次を実行します。英数字一覧の PNG を出力し、空白・セル境界へのはみ出し・異常な塗りつぶしを検査します。
+
+```sh
+python3 scripts/verify_font_render.py \
+  --font dist/rounded.ttf \
+  --output dist/rounded-render.png
+```
+
 範囲指定がない場合はFont Aに存在する全Unicodeコードポイントを対象にします。Font Bに同じコードポイントがある場合はそのグリフをFont Aのアウトラインへ置換し、ない場合はFont Aのグリフを追加します。
 
 利用できる名前付きレンジは次の通りです。
 
 - 日本語: `japanese`、`hiragana`、`katakana`、`kana`、`kanji`、`jis_level_1`、`jis_level_2`
 - 欧文: `ascii`、`latin`、`latin_1`、`latin_extended`、`greek`、`cyrillic`
+- 英数字のみ: `ascii_alnum`（別名 `alnum`）
 - 数字・記号: `numbers`、`punctuation`、`symbols`、`math`、`arrows`、`currency`、`box_drawing`、`dingbats`
 - 表示用: `fullwidth`、`halfwidth`、`emoji`
 

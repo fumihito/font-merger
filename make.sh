@@ -28,6 +28,13 @@ if [ -n "${UNICODE_RANGES:-}" ]; then
     RANGE_ARGS="--range=$UNICODE_RANGES"
 fi
 FAMILY_NAME=${FAMILY_NAME:-OboroMaru}
+ROUND_ARGS=
+if [ "${ROUND_ALNUM:-}" = "1" ] || [ "${ROUND_ALNUM:-}" = "true" ]; then
+    ROUND_ARGS="--round-alnum --round-radius=${ROUND_RADIUS:-0.0125}"
+fi
+if [ -n "${EMBOLDEN_ALNUM:-}" ]; then
+    ROUND_ARGS="$ROUND_ARGS --embolden-alnum=${EMBOLDEN_ALNUM}"
+fi
 
 if ! "$PYTHON" -c 'import fontTools' >/dev/null 2>&1; then
     echo "fontTools is not installed for: $PYTHON" >&2
@@ -39,6 +46,7 @@ fi
     --font-a "$FONT_A" \
     --font-b "$FONT_B" \
     $RANGE_ARGS \
+    $ROUND_ARGS \
     --family-name "$FAMILY_NAME" \
     --output "$OUTPUT"
 
@@ -46,6 +54,7 @@ exec "$PYTHON" scripts/merge_fonts.py \
     --font-a "$FONT_A" \
     --font-b "$FONT_B" \
     $RANGE_ARGS \
+    $ROUND_ARGS \
     --family-name "$FAMILY_NAME" \
     --proportional \
     --output "$PROPORTIONAL_OUTPUT"

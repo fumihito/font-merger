@@ -45,6 +45,16 @@ python3 scripts/merge_fonts.py \
 
 ASCII英数字だけを5%太くする場合は `--embolden-alnum 0.05` を指定します。advance width は維持し、英数字の輪郭だけを拡大します。
 
+英数字の高さを輪郭そのものの変形で約90%にする場合は `--alnum-height-scale 0.9` を指定します。ベースライン（`y=0`）を固定してアウトラインのY座標だけを縮小するため、`hhea` や `OS/2` などのフォント属性、advance width は変更しません。複合グリフは対象グリフ内に展開してから変形し、共有コンポーネントへの副作用を避けます。`make.sh` では `ALNUM_HEIGHT_SCALE=0.9` に対応します。
+
+```sh
+python3 scripts/merge_fonts.py \
+  --font-a fonts/Japanese.ttf \
+  --font-b fonts/Latin.ttf \
+  --range japanese --alnum-height-scale 0.9 \
+  --output dist/short-alnum.ttf
+```
+
 生成後の英数字を画像化して検証するには、次を実行します。英数字一覧の PNG を出力し、空白・セル境界へのはみ出し・異常な塗りつぶしを検査します。
 
 ```sh

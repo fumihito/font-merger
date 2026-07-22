@@ -161,6 +161,7 @@ def merge_fonts(
     round_alnum: bool = False,
     round_radius: float = 0.0125,
     embolden_alnum: float = 0.0,
+    alnum_height_scale: float = 1.0,
 ) -> None:
     """Create output using B as the base and A for selected codepoints."""
 
@@ -209,6 +210,8 @@ def merge_fonts(
         _round_alphanumeric(font_b, round_radius)
     if embolden_alnum:
         _embolden_alphanumeric(font_b, embolden_alnum)
+    if alnum_height_scale != 1.0:
+        _scale_alphanumeric_height(font_b, alnum_height_scale)
 
     if not preserve_names:
         _update_name(font_b, proportional=proportional, family=family_name)
@@ -364,6 +367,56 @@ def _embolden_alphanumeric(font, ratio: float) -> None:
     font["maxp"].recalc(font)
 
 
+def _scale_alphanumeric_height(font, scale: float) -> None:
+    """Scale ASCII alphanumeric outlines vertically around the baseline.
+
+    This changes only the outline geometry: advances, ascender/descender
+    metrics, and other font-wide attributes are deliberately left alone.
+    Scaling around y=0 keeps the baseline in place, so a 0.9 scale makes a
+    capital or x-height reach 90% of its previous height without moving the
+    text's baseline.  Composite glyphs are decomposed into their effective
+    outline before scaling; this prevents a component shared by an unrelated
+    glyph from being changed as a side effect.
+    """
+
+    if scale <= 0:
+        raise ValueError("alphanumeric height scale must be greater than zero")
+    if scale == 1.0:
+        return
+
+    from fontTools.ttLib.tables._g_l_y_f import GlyphCoordinates
+    from fontTools.ttLib.tables.ttProgram import Program
+
+    cmap = font["cmap"].getBestCmap()
+    glyf = font["glyf"]
+    scaled_names: set[str] = set()
+    for codepoint in named_codepoints("ascii_alnum"):
+        glyph_name = cmap.get(codepoint)
+        if glyph_name is None or glyph_name in scaled_names:
+            continue
+        glyph = glyf[glyph_name]
+        if glyph.numberOfContours == 0:
+            continue
+
+        # getCoordinates() resolves composites into the outline actually
+        # rendered by the font. Assigning those coordinates converts the
+        # target into a simple glyph and isolates the transformation.
+        coordinates, end_points, flags = glyph.getCoordinates(glyf)
+        glyph.coordinates = GlyphCoordinates(
+            (round(x), round(y * scale)) for x, y in coordinates
+        )
+        glyph.endPtsOfContours = list(end_points)
+        glyph.flags = list(flags)
+        glyph.numberOfContours = len(end_points)
+        # Instructions refer to point indices and are no longer trustworthy
+        # after a coordinate transform (especially after decomposition).
+        glyph.program = Program()
+        glyph.recalcBounds(glyf)
+        scaled_names.add(glyph_name)
+
+    font["maxp"].recalc(font)
+
+
 def _require_glyf(font, label: str) -> None:
     if "glyf" not in font or "hmtx" not in font:
         raise ValueError(f"{label} must be a TrueType glyf font (CFF/variable fonts are not supported)")
@@ -472,6 +525,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--embolden-alnum", type=float, default=0.0, metavar="RATIO",
         help="expand ASCII letters and digits by a ratio (for example: 0.05)",
     )
+    parser.add_argument(
+        "--alnum-height-scale", type=float, default=1.0, metavar="SCALE",
+        help=("scale ASCII letters and digits vertically around the baseline "
+              "(default: 1.0; use 0.9 for approximately 90%% height)"),
+    )
     parser.add_argument("--preserve-names", action="store_true", help="keep font B's name table")
     parser.add_argument("--family-name", default="OboroMaru", help="family name written to the generated font")
     parser.add_argument("--output", type=Path, default=None, help="output .ttf path")
@@ -500,6 +558,7 @@ def main(argv: list[str] | None = None) -> int:
             round_alnum=args.round_alnum,
             round_radius=args.round_radius,
             embolden_alnum=args.embolden_alnum,
+            alnum_height_scale=args.alnum_height_scale,
         )
     except ImportError:
         print("fontTools is required: python3 -m pip install -r requirements.txt", file=sys.stderr)

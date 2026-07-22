@@ -35,6 +35,9 @@ fi
 if [ -n "${EMBOLDEN_ALNUM:-}" ]; then
     ROUND_ARGS="$ROUND_ARGS --embolden-alnum=${EMBOLDEN_ALNUM}"
 fi
+if [ -n "${ALNUM_HEIGHT_SCALE:-}" ]; then
+    ROUND_ARGS="$ROUND_ARGS --alnum-height-scale=${ALNUM_HEIGHT_SCALE}"
+fi
 
 if ! "$PYTHON" -c 'import fontTools' >/dev/null 2>&1; then
     echo "fontTools is not installed for: $PYTHON" >&2
